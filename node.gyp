@@ -1,6 +1,6 @@
 {
   'variables': {
-    'v8_use_snapshot': 'true',
+    'v8_use_snapshot%': 'true',
     # Turn off -Werror in V8
     # See http://codereview.chromium.org/8159015
     'werror': '',
@@ -8,6 +8,7 @@
     'node_use_dtrace': 'false',
     'node_use_openssl%': 'true',
     'node_use_system_openssl%': 'false',
+    'node_use_isolates%': 'true',
     'library_files': [
       'src/node.js',
       'lib/_debugger.js',
@@ -74,6 +75,7 @@
         'src/node.cc',
         'src/node_vars.cc',
         'src/node_buffer.cc',
+        'src/node_isolate.cc',
         'src/node_constants.cc',
         'src/node_extensions.cc',
         'src/node_file.cc',
@@ -93,10 +95,12 @@
         'src/v8_typed_array.cc',
         'src/udp_wrap.cc',
         # headers to make for a more pleasant IDE experience
+        'src/ngx-queue.h',
         'src/handle_wrap.h',
         'src/node.h',
         'src/node_vars.h',
         'src/node_buffer.h',
+        'src/node_isolate.h',
         'src/node_constants.h',
         'src/node_crypto.h',
         'src/node_extensions.h',
@@ -123,11 +127,18 @@
       ],
 
       'defines': [
+        'NODE_WANT_INTERNALS=1',
         'ARCH="<(target_arch)"',
         'PLATFORM="<(OS)"',
       ],
 
       'conditions': [
+        [ 'node_use_isolates=="true"', {
+          'defines': [ 'HAVE_ISOLATES=1' ],
+        }, {
+          'defines': [ 'HAVE_ISOLATES=0' ],
+        }],
+
         [ 'node_use_openssl=="true"', {
           'defines': [ 'HAVE_OPENSSL=1' ],
           'sources': [ 'src/node_crypto.cc' ],
@@ -169,6 +180,13 @@
         }],
         [ 'OS=="mac"', {
           'libraries': [ '-framework Carbon' ],
+          'defines!': [
+            'PLATFORM="mac"',
+          ],
+          'defines': [
+            # we need to use node's preferred "darwin" rather than gyp's preferred "mac"
+            'PLATFORM="darwin"',
+          ],
         }],
         [ 'OS=="linux"', {
           'libraries': [
@@ -199,9 +217,6 @@
       'target_name': 'node_js2c',
       'type': 'none',
       'toolsets': ['host'],
-      'variables': {
-      },
-
       'actions': [
         {
           'action_name': 'node_js2c',

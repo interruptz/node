@@ -24,6 +24,7 @@
 
 #include <node.h>
 #include <node_buffer.h>
+#include <node_vars.h>
 #include <node_root_certs.h>
 
 #include <string.h>
@@ -591,6 +592,7 @@ int Connection::HandleBIOError(BIO *bio, const char* func, int rv) {
   if (rv >= 0) return rv;
 
   int retry = BIO_should_retry(bio);
+  (void) retry; // unused if !defined(SSL_PRINT_DEBUG)
 
   if (BIO_should_write(bio)) {
     DEBUG_PRINT("[%p] BIO: %s want write. should retry %d\n", ssl_, func, retry);
@@ -1881,6 +1883,7 @@ class Cipher : public ObjectWrap {
     NODE_SET_PROTOTYPE_METHOD(t, "init", CipherInit);
     NODE_SET_PROTOTYPE_METHOD(t, "initiv", CipherInitIv);
     NODE_SET_PROTOTYPE_METHOD(t, "update", CipherUpdate);
+    NODE_SET_PROTOTYPE_METHOD(t, "setAutoPadding", SetAutoPadding);
     NODE_SET_PROTOTYPE_METHOD(t, "final", CipherFinal);
 
     target->Set(String::NewSymbol("Cipher"), t->GetFunction());
@@ -1944,7 +1947,6 @@ class Cipher : public ObjectWrap {
     return true;
   }
 
-
   int CipherUpdate(char* data, int len, unsigned char** out, int* out_len) {
     if (!initialised_) return 0;
     *out_len=len+EVP_CIPHER_CTX_block_size(&ctx);
@@ -1954,19 +1956,24 @@ class Cipher : public ObjectWrap {
     return 1;
   }
 
+  int SetAutoPadding(bool auto_padding) {
+    if (!initialised_) return 0;
+    return EVP_CIPHER_CTX_set_padding(&ctx, auto_padding ? 1 : 0);
+  }
+
   int CipherFinal(unsigned char** out, int *out_len) {
     if (!initialised_) return 0;
     *out = new unsigned char[EVP_CIPHER_CTX_block_size(&ctx)];
-    EVP_CipherFinal_ex(&ctx,*out,out_len);
+    int r = EVP_CipherFinal_ex(&ctx,*out, out_len);
     EVP_CIPHER_CTX_cleanup(&ctx);
     initialised_ = false;
-    return 1;
+    return r;
   }
 
 
  protected:
 
-  static Handle<Value> New (const Arguments& args) {
+  static Handle<Value> New(const Arguments& args) {
     HandleScope scope;
 
     Cipher *cipher = new Cipher();
@@ -2154,6 +2161,15 @@ class Cipher : public ObjectWrap {
     return scope.Close(outString);
   }
 
+  static Handle<Value> SetAutoPadding(const Arguments& args) {
+    HandleScope scope;
+    Cipher *cipher = ObjectWrap::Unwrap<Cipher>(args.This());
+
+    cipher->SetAutoPadding(args.Length() < 1 || args[0]->BooleanValue());
+
+    return Undefined();
+  }
+
   static Handle<Value> CipherFinal(const Arguments& args) {
     Cipher *cipher = ObjectWrap::Unwrap<Cipher>(args.This());
 
@@ -2168,10 +2184,18 @@ class Cipher : public ObjectWrap {
     int r = cipher->CipherFinal(&out_value, &out_len);
 
     assert(out_value != NULL);
-    assert(out_len != -1);
+    assert(out_len != -1 || r == 0);
 
     if (out_len == 0 || r == 0) {
-      return scope.Close(String::New(""));
+      // out_value always get allocated.
+      delete[] out_value;
+      if (r == 0) {
+        Local<Value> exception = Exception::TypeError(
+          String::New("CipherFinal fail"));
+        return ThrowException(exception);
+      } else {
+        return scope.Close(String::New(""));
+      }
     }
 
     enum encoding enc = ParseEncoding(args[0], BINARY);
@@ -2246,7 +2270,9 @@ class Decipher : public ObjectWrap {
     NODE_SET_PROTOTYPE_METHOD(t, "initiv", DecipherInitIv);
     NODE_SET_PROTOTYPE_METHOD(t, "update", DecipherUpdate);
     NODE_SET_PROTOTYPE_METHOD(t, "final", DecipherFinal<false>);
+    // This is completely undocumented:
     NODE_SET_PROTOTYPE_METHOD(t, "finaltol", DecipherFinal<true>);
+    NODE_SET_PROTOTYPE_METHOD(t, "setAutoPadding", SetAutoPadding);
 
     target->Set(String::NewSymbol("Decipher"), t->GetFunction());
   }
@@ -2329,9 +2355,16 @@ class Decipher : public ObjectWrap {
     return 1;
   }
 
+  int SetAutoPadding(bool auto_padding) {
+    if (!initialised_) return 0;
+    return EVP_CIPHER_CTX_set_padding(&ctx, auto_padding ? 1 : 0);
+  }
+
   // coverity[alloc_arg]
   template <bool TOLERATE_PADDING>
   int DecipherFinal(unsigned char** out, int *out_len) {
+    int r;
+
     if (!initialised_) {
       *out_len = 0;
       *out = NULL;
@@ -2340,13 +2373,13 @@ class Decipher : public ObjectWrap {
 
     *out = new unsigned char[EVP_CIPHER_CTX_block_size(&ctx)];
     if (TOLERATE_PADDING) {
-      local_EVP_DecryptFinal_ex(&ctx,*out,out_len);
+      r = local_EVP_DecryptFinal_ex(&ctx,*out,out_len);
     } else {
-      EVP_CipherFinal_ex(&ctx,*out,out_len);
+      r = EVP_CipherFinal_ex(&ctx,*out,out_len);
     }
     EVP_CIPHER_CTX_cleanup(&ctx);
     initialised_ = false;
-    return 1;
+    return r;
   }
 
 
@@ -2579,6 +2612,15 @@ class Decipher : public ObjectWrap {
 
   }
 
+  static Handle<Value> SetAutoPadding(const Arguments& args) {
+    HandleScope scope;
+    Decipher *cipher = ObjectWrap::Unwrap<Decipher>(args.This());
+
+    cipher->SetAutoPadding(args.Length() < 1 || args[0]->BooleanValue());
+
+    return Undefined();
+  }
+
   template <bool TOLERATE_PADDING>
   static Handle<Value> DecipherFinal(const Arguments& args) {
     HandleScope scope;
@@ -2595,8 +2637,14 @@ class Decipher : public ObjectWrap {
     assert(out_len != -1);
 
     if (out_len == 0 || r == 0) {
-      delete[] out_value;
-      return scope.Close(String::New(""));
+      delete [] out_value; // allocated even if out_len == 0
+      if (r == 0) {
+        Local<Value> exception = Exception::TypeError(
+          String::New("DecipherFinal fail"));
+        return ThrowException(exception);
+      } else {
+        return scope.Close(String::New(""));
+      }
     }
 
     if (args.Length() == 0 || !args[0]->IsString()) {
@@ -4117,7 +4165,8 @@ PBKDF2(const Arguments& args) {
 
   req = new uv_work_t();
   req->data = request;
-  uv_queue_work(uv_default_loop(), req, EIO_PBKDF2, EIO_PBKDF2After);
+  uv_queue_work(Loop(), req, EIO_PBKDF2, EIO_PBKDF2After);
+
   return Undefined();
 
 err:
@@ -4239,7 +4288,7 @@ Handle<Value> RandomBytes(const Arguments& args) {
     Local<Function> callback_v = Local<Function>(Function::Cast(*args[1]));
     req->callback_ = Persistent<Function>::New(callback_v);
 
-    uv_queue_work(uv_default_loop(),
+    uv_queue_work(Loop(),
                   &req->work_req_,
                   RandomBytesWork<generator>,
                   RandomBytesAfter<generator>);

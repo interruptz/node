@@ -650,12 +650,14 @@ int uv_fs_event_init(uv_loop_t* loop,
 
   ev_io_init(&handle->read_watcher, uv__inotify_read, fd, EV_READ);
   ev_io_start(loop->ev, &handle->read_watcher);
+  ev_unref(loop->ev);
 
   return 0;
 }
 
 
 void uv__fs_event_destroy(uv_fs_event_t* handle) {
+  ev_ref(handle->loop->ev);
   ev_io_stop(handle->loop->ev, &handle->read_watcher);
   uv__close(handle->fd);
   handle->fd = -1;
@@ -677,8 +679,7 @@ int uv_fs_event_init(uv_loop_t* loop,
 
 
 void uv__fs_event_destroy(uv_fs_event_t* handle) {
-  assert(0 && "unreachable");
-  abort();
+  UNREACHABLE();
 }
 
 #endif /* HAVE_INOTIFY_INIT || HAVE_INOTIFY_INIT1 */

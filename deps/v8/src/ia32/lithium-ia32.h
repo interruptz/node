@@ -1,4 +1,4 @@
-// Copyright 2011 the V8 project authors. All rights reserved.
+// Copyright 2012 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -135,6 +135,7 @@ class LCodeGen;
   V(OuterContext)                               \
   V(Parameter)                                  \
   V(Power)                                      \
+  V(Random)                                     \
   V(PushArgument)                               \
   V(RegExpLiteral)                              \
   V(Return)                                     \
@@ -1043,6 +1044,17 @@ class LPower: public LTemplateInstruction<1, 2, 0> {
 };
 
 
+class LRandom: public LTemplateInstruction<1, 1, 0> {
+ public:
+  explicit LRandom(LOperand* global_object) {
+    inputs_[0] = global_object;
+  }
+
+  DECLARE_CONCRETE_INSTRUCTION(Random, "random")
+  DECLARE_HYDROGEN_ACCESSOR(Random)
+};
+
+
 class LArithmeticD: public LTemplateInstruction<1, 2, 0> {
  public:
   LArithmeticD(Token::Value op, LOperand* left, LOperand* right)
@@ -1269,16 +1281,16 @@ class LLoadGlobalGeneric: public LTemplateInstruction<1, 2, 0> {
 };
 
 
-class LStoreGlobalCell: public LTemplateInstruction<0, 1, 2> {
+class LStoreGlobalCell: public LTemplateInstruction<0, 1, 0> {
  public:
-  explicit LStoreGlobalCell(LOperand* value, LOperand* temp1, LOperand* temp2) {
+  explicit LStoreGlobalCell(LOperand* value) {
     inputs_[0] = value;
-    temps_[0] = temp1;
-    temps_[1] = temp2;
   }
 
   DECLARE_CONCRETE_INSTRUCTION(StoreGlobalCell, "store-global-cell")
   DECLARE_HYDROGEN_ACCESSOR(StoreGlobalCell)
+
+  LOperand* value() { return inputs_[0]; }
 };
 
 
@@ -1612,10 +1624,11 @@ class LSmiTag: public LTemplateInstruction<1, 1, 0> {
 };
 
 
-class LNumberUntagD: public LTemplateInstruction<1, 1, 0> {
+class LNumberUntagD: public LTemplateInstruction<1, 1, 1> {
  public:
-  explicit LNumberUntagD(LOperand* value) {
+  explicit LNumberUntagD(LOperand* value, LOperand* temp) {
     inputs_[0] = value;
+    temps_[0] = temp;
   }
 
   DECLARE_CONCRETE_INSTRUCTION(NumberUntagD, "double-untag")

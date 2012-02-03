@@ -1219,7 +1219,7 @@ void JSObject::ValidateSmiOnlyElements() {
         map != heap->free_space_map()) {
       for (int i = 0; i < fixed_array->length(); i++) {
         Object* current = fixed_array->get(i);
-        ASSERT(current->IsSmi() || current == heap->the_hole_value());
+        ASSERT(current->IsSmi() || current->IsTheHole());
       }
     }
   }
@@ -1290,19 +1290,34 @@ MaybeObject* JSObject::EnsureCanContainElements(FixedArrayBase* elements,
 }
 
 
-void JSObject::set_elements(FixedArrayBase* value, WriteBarrierMode mode) {
+void JSObject::set_map_and_elements(Map* new_map,
+                                    FixedArrayBase* value,
+                                    WriteBarrierMode mode) {
+  ASSERT(value->HasValidElements());
+#ifdef DEBUG
+  ValidateSmiOnlyElements();
+#endif
+  if (new_map != NULL) {
+    if (mode == UPDATE_WRITE_BARRIER) {
+      set_map(new_map);
+    } else {
+      ASSERT(mode == SKIP_WRITE_BARRIER);
+      set_map_no_write_barrier(new_map);
+    }
+  }
   ASSERT((map()->has_fast_elements() ||
           map()->has_fast_smi_only_elements()) ==
          (value->map() == GetHeap()->fixed_array_map() ||
           value->map() == GetHeap()->fixed_cow_array_map()));
   ASSERT(map()->has_fast_double_elements() ==
          value->IsFixedDoubleArray());
-  ASSERT(value->HasValidElements());
-#ifdef DEBUG
-  ValidateSmiOnlyElements();
-#endif
   WRITE_FIELD(this, kElementsOffset, value);
   CONDITIONAL_WRITE_BARRIER(GetHeap(), this, kElementsOffset, value, mode);
+}
+
+
+void JSObject::set_elements(FixedArrayBase* value, WriteBarrierMode mode) {
+  set_map_and_elements(NULL, value, mode);
 }
 
 
@@ -1376,11 +1391,11 @@ int JSObject::GetHeaderSize() {
     case JS_VALUE_TYPE:
       return JSValue::kSize;
     case JS_ARRAY_TYPE:
-      return JSValue::kSize;
+      return JSArray::kSize;
     case JS_WEAK_MAP_TYPE:
       return JSWeakMap::kSize;
     case JS_REGEXP_TYPE:
-      return JSValue::kSize;
+      return JSRegExp::kSize;
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE:
       return JSObject::kHeaderSize;
     case JS_MESSAGE_OBJECT_TYPE:
@@ -1710,7 +1725,7 @@ void FixedDoubleArray::Initialize(FixedArray* from) {
 }
 
 
-void FixedDoubleArray::Initialize(NumberDictionary* from) {
+void FixedDoubleArray::Initialize(SeededNumberDictionary* from) {
   int offset = kHeaderSize;
   for (int current = 0; current < length(); ++current) {
     WRITE_DOUBLE_FIELD(this, offset, hole_nan_as_double());
@@ -2042,13 +2057,14 @@ int HashTable<Shape, Key>::FindEntry(Key key) {
 template<typename Shape, typename Key>
 int HashTable<Shape, Key>::FindEntry(Isolate* isolate, Key key) {
   uint32_t capacity = Capacity();
-  uint32_t entry = FirstProbe(Shape::Hash(key), capacity);
+  uint32_t entry = FirstProbe(HashTable<Shape, Key>::Hash(key), capacity);
   uint32_t count = 1;
   // EnsureCapacity will guarantee the hash table is never full.
   while (true) {
     Object* element = KeyAt(entry);
-    if (element == isolate->heap()->undefined_value()) break;  // Empty entry.
-    if (element != isolate->heap()->the_hole_value() &&
+    // Empty entry.
+    if (element == isolate->heap()->raw_unchecked_undefined_value()) break;
+    if (element != isolate->heap()->raw_unchecked_the_hole_value() &&
         Shape::IsMatch(key, element)) return entry;
     entry = NextProbe(entry, count++, capacity);
   }
@@ -2056,14 +2072,14 @@ int HashTable<Shape, Key>::FindEntry(Isolate* isolate, Key key) {
 }
 
 
-bool NumberDictionary::requires_slow_elements() {
+bool SeededNumberDictionary::requires_slow_elements() {
   Object* max_index_object = get(kMaxNumberKeyIndex);
   if (!max_index_object->IsSmi()) return false;
   return 0 !=
       (Smi::cast(max_index_object)->value() & kRequiresSlowElementsMask);
 }
 
-uint32_t NumberDictionary::max_number_key() {
+uint32_t SeededNumberDictionary::max_number_key() {
   ASSERT(!requires_slow_elements());
   Object* max_index_object = get(kMaxNumberKeyIndex);
   if (!max_index_object->IsSmi()) return 0;
@@ -2071,7 +2087,7 @@ uint32_t NumberDictionary::max_number_key() {
   return value >> kRequiresSlowElementsTagSize;
 }
 
-void NumberDictionary::set_requires_slow_elements() {
+void SeededNumberDictionary::set_requires_slow_elements() {
   set(kMaxNumberKeyIndex, Smi::FromInt(kRequiresSlowElementsMask));
 }
 
@@ -3370,6 +3386,9 @@ ACCESSORS(AccessorInfo, data, Object, kDataOffset)
 ACCESSORS(AccessorInfo, name, Object, kNameOffset)
 ACCESSORS(AccessorInfo, flag, Smi, kFlagOffset)
 
+ACCESSORS(AccessorPair, getter, Object, kGetterOffset)
+ACCESSORS(AccessorPair, setter, Object, kSetterOffset)
+
 ACCESSORS(AccessCheckInfo, named_callback, Object, kNamedCallbackOffset)
 ACCESSORS(AccessCheckInfo, indexed_callback, Object, kIndexedCallbackOffset)
 ACCESSORS(AccessCheckInfo, data, Object, kDataOffset)
@@ -4023,8 +4042,7 @@ INT_ACCESSORS(Code, instruction_size, kInstructionSizeOffset)
 ACCESSORS(Code, relocation_info, ByteArray, kRelocationInfoOffset)
 ACCESSORS(Code, handler_table, FixedArray, kHandlerTableOffset)
 ACCESSORS(Code, deoptimization_data, FixedArray, kDeoptimizationDataOffset)
-ACCESSORS(Code, next_code_flushing_candidate,
-          Object, kNextCodeFlushingCandidateOffset)
+ACCESSORS(Code, gc_metadata, Object, kGCMetadataOffset)
 
 
 byte* Code::instruction_start()  {
@@ -4280,9 +4298,9 @@ StringDictionary* JSObject::property_dictionary() {
 }
 
 
-NumberDictionary* JSObject::element_dictionary() {
+SeededNumberDictionary* JSObject::element_dictionary() {
   ASSERT(HasDictionaryElements());
-  return NumberDictionary::cast(elements());
+  return SeededNumberDictionary::cast(elements());
 }
 
 
@@ -4305,13 +4323,15 @@ uint32_t String::Hash() {
 }
 
 
-StringHasher::StringHasher(int length)
+StringHasher::StringHasher(int length, uint32_t seed)
   : length_(length),
-    raw_running_hash_(0),
+    raw_running_hash_(seed),
     array_index_(0),
     is_array_index_(0 < length_ && length_ <= String::kMaxArrayIndexSize),
     is_first_char_(true),
-    is_valid_(true) { }
+    is_valid_(true) {
+  ASSERT(FLAG_randomize_hashes || raw_running_hash_ == 0);
+}
 
 
 bool StringHasher::has_trivial_hash() {
@@ -4363,7 +4383,7 @@ uint32_t StringHasher::GetHash() {
   result += (result << 3);
   result ^= (result >> 11);
   result += (result << 15);
-  if (result == 0) {
+  if ((result & String::kHashBitMask) == 0) {
     result = 27;
   }
   return result;
@@ -4371,8 +4391,8 @@ uint32_t StringHasher::GetHash() {
 
 
 template <typename schar>
-uint32_t HashSequentialString(const schar* chars, int length) {
-  StringHasher hasher(length);
+uint32_t HashSequentialString(const schar* chars, int length, uint32_t seed) {
+  StringHasher hasher(length, seed);
   if (!hasher.has_trivial_hash()) {
     int i;
     for (i = 0; hasher.is_array_index() && (i < length); i++) {
@@ -4517,16 +4537,27 @@ bool NumberDictionaryShape::IsMatch(uint32_t key, Object* other) {
 }
 
 
-uint32_t NumberDictionaryShape::Hash(uint32_t key) {
-  return ComputeIntegerHash(key);
+uint32_t UnseededNumberDictionaryShape::Hash(uint32_t key) {
+  return ComputeIntegerHash(key, 0);
 }
 
 
-uint32_t NumberDictionaryShape::HashForObject(uint32_t key, Object* other) {
+uint32_t UnseededNumberDictionaryShape::HashForObject(uint32_t key,
+                                                      Object* other) {
   ASSERT(other->IsNumber());
-  return ComputeIntegerHash(static_cast<uint32_t>(other->Number()));
+  return ComputeIntegerHash(static_cast<uint32_t>(other->Number()), 0);
 }
 
+uint32_t SeededNumberDictionaryShape::SeededHash(uint32_t key, uint32_t seed) {
+  return ComputeIntegerHash(key, seed);
+}
+
+uint32_t SeededNumberDictionaryShape::SeededHashForObject(uint32_t key,
+                                                          uint32_t seed,
+                                                          Object* other) {
+  ASSERT(other->IsNumber());
+  return ComputeIntegerHash(static_cast<uint32_t>(other->Number()), seed);
+}
 
 MaybeObject* NumberDictionaryShape::AsObject(uint32_t key) {
   return Isolate::Current()->heap()->NumberFromUint32(key);

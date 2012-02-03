@@ -1187,6 +1187,44 @@ TEST(TestInternalWeakListsTraverseWithGC) {
 }
 
 
+TEST(TestSizeOfObjects) {
+  v8::V8::Initialize();
+
+  // Get initial heap size after several full GCs, which will stabilize
+  // the heap size and return with sweeping finished completely.
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK(HEAP->old_pointer_space()->IsSweepingComplete());
+  int initial_size = static_cast<int>(HEAP->SizeOfObjects());
+
+  {
+    // Allocate objects on several different old-space pages so that
+    // lazy sweeping kicks in for subsequent GC runs.
+    AlwaysAllocateScope always_allocate;
+    int filler_size = static_cast<int>(FixedArray::SizeFor(8192));
+    for (int i = 1; i <= 100; i++) {
+      HEAP->AllocateFixedArray(8192, TENURED)->ToObjectChecked();
+      CHECK_EQ(initial_size + i * filler_size,
+               static_cast<int>(HEAP->SizeOfObjects()));
+    }
+  }
+
+  // The heap size should go back to initial size after a full GC, even
+  // though sweeping didn't finish yet.
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK(!HEAP->old_pointer_space()->IsSweepingComplete());
+  CHECK_EQ(initial_size, static_cast<int>(HEAP->SizeOfObjects()));
+
+  // Advancing the sweeper step-wise should not change the heap size.
+  while (!HEAP->old_pointer_space()->IsSweepingComplete()) {
+    HEAP->old_pointer_space()->AdvanceSweeper(KB);
+    CHECK_EQ(initial_size, static_cast<int>(HEAP->SizeOfObjects()));
+  }
+}
+
+
 TEST(TestSizeOfObjectsVsHeapIteratorPrecision) {
   InitializeVM();
   HEAP->EnsureHeapIsIterable();
@@ -1333,6 +1371,7 @@ static int NumberOfGlobalObjects() {
 // Test that we don't embed maps from foreign contexts into
 // optimized code.
 TEST(LeakGlobalContextViaMap) {
+  i::FLAG_allow_natives_syntax = true;
   v8::HandleScope outer_scope;
   v8::Persistent<v8::Context> ctx1 = v8::Context::New();
   v8::Persistent<v8::Context> ctx2 = v8::Context::New();
@@ -1349,7 +1388,8 @@ TEST(LeakGlobalContextViaMap) {
     ctx2->Global()->Set(v8_str("o"), v);
     v8::Local<v8::Value> res = CompileRun(
         "function f() { return o.x; }"
-        "for (var i = 0; i < 1000000; ++i) f();"
+        "for (var i = 0; i < 10; ++i) f();"
+        "%OptimizeFunctionOnNextCall(f);"
         "f();");
     CHECK_EQ(42, res->Int32Value());
     ctx2->Global()->Set(v8_str("o"), v8::Int32::New(0));
@@ -1368,6 +1408,7 @@ TEST(LeakGlobalContextViaMap) {
 // Test that we don't embed functions from foreign contexts into
 // optimized code.
 TEST(LeakGlobalContextViaFunction) {
+  i::FLAG_allow_natives_syntax = true;
   v8::HandleScope outer_scope;
   v8::Persistent<v8::Context> ctx1 = v8::Context::New();
   v8::Persistent<v8::Context> ctx2 = v8::Context::New();
@@ -1384,7 +1425,8 @@ TEST(LeakGlobalContextViaFunction) {
     ctx2->Global()->Set(v8_str("o"), v);
     v8::Local<v8::Value> res = CompileRun(
         "function f(x) { return x(); }"
-        "for (var i = 0; i < 1000000; ++i) f(o);"
+        "for (var i = 0; i < 10; ++i) f(o);"
+        "%OptimizeFunctionOnNextCall(f);"
         "f(o);");
     CHECK_EQ(42, res->Int32Value());
     ctx2->Global()->Set(v8_str("o"), v8::Int32::New(0));
@@ -1397,4 +1439,190 @@ TEST(LeakGlobalContextViaFunction) {
   ctx2.Dispose();
   HEAP->CollectAllAvailableGarbage();
   CHECK_EQ(0, NumberOfGlobalObjects());
+}
+
+
+TEST(LeakGlobalContextViaMapKeyed) {
+  i::FLAG_allow_natives_syntax = true;
+  v8::HandleScope outer_scope;
+  v8::Persistent<v8::Context> ctx1 = v8::Context::New();
+  v8::Persistent<v8::Context> ctx2 = v8::Context::New();
+  ctx1->Enter();
+
+  HEAP->CollectAllAvailableGarbage();
+  CHECK_EQ(4, NumberOfGlobalObjects());
+
+  {
+    v8::HandleScope inner_scope;
+    CompileRun("var v = [42, 43]");
+    v8::Local<v8::Value> v = ctx1->Global()->Get(v8_str("v"));
+    ctx2->Enter();
+    ctx2->Global()->Set(v8_str("o"), v);
+    v8::Local<v8::Value> res = CompileRun(
+        "function f() { return o[0]; }"
+        "for (var i = 0; i < 10; ++i) f();"
+        "%OptimizeFunctionOnNextCall(f);"
+        "f();");
+    CHECK_EQ(42, res->Int32Value());
+    ctx2->Global()->Set(v8_str("o"), v8::Int32::New(0));
+    ctx2->Exit();
+    ctx1->Exit();
+    ctx1.Dispose();
+  }
+  HEAP->CollectAllAvailableGarbage();
+  CHECK_EQ(2, NumberOfGlobalObjects());
+  ctx2.Dispose();
+  HEAP->CollectAllAvailableGarbage();
+  CHECK_EQ(0, NumberOfGlobalObjects());
+}
+
+
+TEST(LeakGlobalContextViaMapProto) {
+  i::FLAG_allow_natives_syntax = true;
+  v8::HandleScope outer_scope;
+  v8::Persistent<v8::Context> ctx1 = v8::Context::New();
+  v8::Persistent<v8::Context> ctx2 = v8::Context::New();
+  ctx1->Enter();
+
+  HEAP->CollectAllAvailableGarbage();
+  CHECK_EQ(4, NumberOfGlobalObjects());
+
+  {
+    v8::HandleScope inner_scope;
+    CompileRun("var v = { y: 42}");
+    v8::Local<v8::Value> v = ctx1->Global()->Get(v8_str("v"));
+    ctx2->Enter();
+    ctx2->Global()->Set(v8_str("o"), v);
+    v8::Local<v8::Value> res = CompileRun(
+        "function f() {"
+        "  var p = {x: 42};"
+        "  p.__proto__ = o;"
+        "  return p.x;"
+        "}"
+        "for (var i = 0; i < 10; ++i) f();"
+        "%OptimizeFunctionOnNextCall(f);"
+        "f();");
+    CHECK_EQ(42, res->Int32Value());
+    ctx2->Global()->Set(v8_str("o"), v8::Int32::New(0));
+    ctx2->Exit();
+    ctx1->Exit();
+    ctx1.Dispose();
+  }
+  HEAP->CollectAllAvailableGarbage();
+  CHECK_EQ(2, NumberOfGlobalObjects());
+  ctx2.Dispose();
+  HEAP->CollectAllAvailableGarbage();
+  CHECK_EQ(0, NumberOfGlobalObjects());
+}
+
+
+TEST(InstanceOfStubWriteBarrier) {
+  i::FLAG_allow_natives_syntax = true;
+#ifdef DEBUG
+  i::FLAG_verify_heap = true;
+#endif
+  InitializeVM();
+  if (!i::V8::UseCrankshaft()) return;
+  v8::HandleScope outer_scope;
+
+  {
+    v8::HandleScope scope;
+    CompileRun(
+        "function foo () { }"
+        "function mkbar () { return new (new Function(\"\")) (); }"
+        "function f (x) { return (x instanceof foo); }"
+        "function g () { f(mkbar()); }"
+        "f(new foo()); f(new foo());"
+        "%OptimizeFunctionOnNextCall(f);"
+        "f(new foo()); g();");
+  }
+
+  IncrementalMarking* marking = HEAP->incremental_marking();
+  marking->Abort();
+  marking->Start();
+
+  Handle<JSFunction> f =
+      v8::Utils::OpenHandle(
+          *v8::Handle<v8::Function>::Cast(
+              v8::Context::GetCurrent()->Global()->Get(v8_str("f"))));
+
+  CHECK(f->IsOptimized());
+
+  while (!Marking::IsBlack(Marking::MarkBitFrom(f->code())) &&
+         !marking->IsStopped()) {
+    marking->Step(MB);
+  }
+
+  CHECK(marking->IsMarking());
+
+  // Discard any pending GC requests otherwise we will get GC when we enter
+  // code below.
+  if (ISOLATE->stack_guard()->IsGCRequest()) {
+    ISOLATE->stack_guard()->Continue(GC_REQUEST);
+  }
+
+  {
+    v8::HandleScope scope;
+    v8::Handle<v8::Object> global = v8::Context::GetCurrent()->Global();
+    v8::Handle<v8::Function> g =
+        v8::Handle<v8::Function>::Cast(global->Get(v8_str("g")));
+    g->Call(global, 0, NULL);
+  }
+
+  HEAP->incremental_marking()->set_should_hurry(true);
+  HEAP->CollectGarbage(OLD_POINTER_SPACE);
+}
+
+
+TEST(PrototypeTransitionClearing) {
+  InitializeVM();
+  v8::HandleScope scope;
+
+  CompileRun(
+      "var base = {};"
+      "var live = [];"
+      "for (var i = 0; i < 10; i++) {"
+      "  var object = {};"
+      "  var prototype = {};"
+      "  object.__proto__ = prototype;"
+      "  if (i >= 3) live.push(object, prototype);"
+      "}");
+
+  Handle<JSObject> baseObject =
+      v8::Utils::OpenHandle(
+          *v8::Handle<v8::Object>::Cast(
+              v8::Context::GetCurrent()->Global()->Get(v8_str("base"))));
+
+  // Verify that only dead prototype transitions are cleared.
+  CHECK_EQ(10, baseObject->map()->NumberOfProtoTransitions());
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK_EQ(10 - 3, baseObject->map()->NumberOfProtoTransitions());
+
+  // Verify that prototype transitions array was compacted.
+  FixedArray* trans = baseObject->map()->prototype_transitions();
+  for (int i = 0; i < 10 - 3; i++) {
+    int j = Map::kProtoTransitionHeaderSize +
+        i * Map::kProtoTransitionElementsPerEntry;
+    CHECK(trans->get(j + Map::kProtoTransitionMapOffset)->IsMap());
+    CHECK(trans->get(j + Map::kProtoTransitionPrototypeOffset)->IsJSObject());
+  }
+
+  // Make sure next prototype is placed on an old-space evacuation candidate.
+  Handle<JSObject> prototype;
+  PagedSpace* space = HEAP->old_pointer_space();
+  do {
+    prototype = FACTORY->NewJSArray(32 * KB, TENURED);
+  } while (space->FirstPage() == space->LastPage() ||
+      !space->LastPage()->Contains(prototype->address()));
+
+  // Add a prototype on an evacuation candidate and verify that transition
+  // clearing correctly records slots in prototype transition array.
+  i::FLAG_always_compact = true;
+  Handle<Map> map(baseObject->map());
+  CHECK(!space->LastPage()->Contains(map->prototype_transitions()->address()));
+  CHECK(space->LastPage()->Contains(prototype->address()));
+  baseObject->SetPrototype(*prototype, false)->ToObjectChecked();
+  CHECK(map->GetPrototypeTransition(*prototype)->IsMap());
+  HEAP->CollectAllGarbage(Heap::kNoGCFlags);
+  CHECK(map->GetPrototypeTransition(*prototype)->IsMap());
 }

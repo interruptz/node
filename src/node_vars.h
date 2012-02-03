@@ -9,6 +9,10 @@
 #include <uv.h>
 #include <http_parser.h>
 
+#if defined(_MSC_VER)
+# define PATH_MAX MAX_PATH
+#endif
+
 #ifndef PATH_MAX 
 # define PATH_MAX 4096
 #endif
@@ -31,13 +35,6 @@ struct globals {
   v8::Persistent<v8::String> listeners_symbol;
   v8::Persistent<v8::String> uncaught_exception_symbol;
   v8::Persistent<v8::String> emit_symbol;
-  bool print_eval;
-  char *eval_string;
-  int option_end_index;
-  bool use_debug_agent;
-  bool debug_wait_connect;
-  int debug_port;
-  int max_stack_size;
   uv_check_t check_tick_watcher;
   uv_prepare_t prepare_tick_watcher;
   uv_idle_t tick_spinner;
@@ -65,7 +62,6 @@ struct globals {
   int64_t tick_times[RPM_SAMPLES];
   int tick_time_head;
   int uncaught_exception_counter;
-  uv_async_t debug_watcher;
   v8::Persistent<v8::Object> binding_cache;
   v8::Persistent<v8::Array> module_load_list;
   v8::Isolate* node_isolate;
@@ -175,6 +171,13 @@ struct globals {
   v8::Persistent<v8::String> write_sym;
   v8::Persistent<v8::FunctionTemplate> buffer_constructor_template;
 
+  // node_script.cc
+  v8::Persistent<v8::FunctionTemplate> wrapped_context_constructor;
+  v8::Persistent<v8::FunctionTemplate> wrapped_script_constructor;
+
+  // node_isolate.cc
+  v8::Persistent<v8::FunctionTemplate> isolate_debugger_constructor;
+
   // node_signal_watcher.cc
   v8::Persistent<v8::String> callback_symbol;
   v8::Persistent<v8::FunctionTemplate> signal_watcher_constructor_template;
@@ -183,6 +186,11 @@ struct globals {
   ::ares_channel ares_channel;
 };
 
+// Initialize globals struct.
+void globals_init(struct globals*);
+
+// Get the globals struct for the current Isolate. The returned pointer is
+// already initialized.
 struct globals* globals_get();
 
 }  // namespace node

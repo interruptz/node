@@ -21,6 +21,7 @@
 
 #include <node.h>
 #include <node_buffer.h>
+#include <node_vars.h>
 #include <handle_wrap.h>
 #include <stream_wrap.h>
 #include <tcp_wrap.h>
@@ -34,6 +35,7 @@
 #define slab_sym NODE_VAR(slab_sym)
 #define handle_that_last_alloced NODE_VAR(handle_that_last_alloced)
 #define buffer_sym NODE_VAR(buffer_sym)
+#define buffer_constructor_template NODE_VAR(buffer_constructor_template)
 #define write_queue_size_sym NODE_VAR(write_queue_size_sym)
 #define stream_wrap_initialized NODE_VAR(stream_wrap_initialized)
 
@@ -132,7 +134,7 @@ Handle<Value> StreamWrap::ReadStart(const Arguments& args) {
   }
 
   // Error starting the tcp.
-  if (r) SetErrno(uv_last_error(uv_default_loop()));
+  if (r) SetErrno(uv_last_error(Loop()));
 
   return scope.Close(Integer::New(r));
 }
@@ -146,19 +148,23 @@ Handle<Value> StreamWrap::ReadStop(const Arguments& args) {
   int r = uv_read_stop(wrap->stream_);
 
   // Error starting the tcp.
-  if (r) SetErrno(uv_last_error(uv_default_loop()));
+  if (r) SetErrno(uv_last_error(Loop()));
 
   return scope.Close(Integer::New(r));
 }
 
 
-inline char* StreamWrap::NewSlab(Handle<Object> global,
-                                        Handle<Object> wrap_obj) {
-  Buffer* b = Buffer::New(SLAB_SIZE);
-  global->SetHiddenValue(slab_sym, b->handle_);
+char* StreamWrap::NewSlab(Handle<Object> global,
+                          Handle<Object> wrap_obj) {
+  HandleScope scope;
+  Local<Value> arg = Integer::NewFromUnsigned(SLAB_SIZE);
+  Local<Object> b = buffer_constructor_template->GetFunction()->
+    NewInstance(1, &arg);
+  if (b.IsEmpty()) return NULL;
+  global->SetHiddenValue(slab_sym, b);
   assert(Buffer::Length(b) == SLAB_SIZE);
   slab_used = 0;
-  wrap_obj->SetHiddenValue(slab_sym, b->handle_);
+  wrap_obj->SetHiddenValue(slab_sym, b);
   return Buffer::Data(b);
 }
 
@@ -225,7 +231,7 @@ void StreamWrap::OnReadCommon(uv_stream_t* handle, ssize_t nread,
       slab_used -= buf.len;
     }
 
-    SetErrno(uv_last_error(uv_default_loop()));
+    SetErrno(uv_last_error(Loop()));
     MakeCallback(wrap->object_, "onread", 0, NULL);
     return;
   }
@@ -338,7 +344,7 @@ Handle<Value> StreamWrap::Write(const Arguments& args) {
   wrap->UpdateWriteQueueSize();
 
   if (r) {
-    SetErrno(uv_last_error(uv_default_loop()));
+    SetErrno(uv_last_error(Loop()));
     delete req_wrap;
     return scope.Close(v8::Null());
   } else {
@@ -358,7 +364,7 @@ void StreamWrap::AfterWrite(uv_write_t* req, int status) {
   assert(wrap->object_.IsEmpty() == false);
 
   if (status) {
-    SetErrno(uv_last_error(uv_default_loop()));
+    SetErrno(uv_last_error(Loop()));
   }
 
   wrap->UpdateWriteQueueSize();
@@ -388,7 +394,7 @@ Handle<Value> StreamWrap::Shutdown(const Arguments& args) {
   req_wrap->Dispatched();
 
   if (r) {
-    SetErrno(uv_last_error(uv_default_loop()));
+    SetErrno(uv_last_error(Loop()));
     delete req_wrap;
     return scope.Close(v8::Null());
   } else {
@@ -408,7 +414,7 @@ void StreamWrap::AfterShutdown(uv_shutdown_t* req, int status) {
   HandleScope scope;
 
   if (status) {
-    SetErrno(uv_last_error(uv_default_loop()));
+    SetErrno(uv_last_error(Loop()));
   }
 
   Local<Value> argv[3] = {

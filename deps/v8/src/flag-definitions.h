@@ -349,6 +349,14 @@ DEFINE_bool(trace_exception, false,
             "print stack trace when throwing exceptions")
 DEFINE_bool(preallocate_message_memory, false,
             "preallocate some memory to build stack traces.")
+DEFINE_bool(randomize_hashes,
+            true,
+            "randomize hashes to avoid predictable hash collisions "
+            "(with snapshots this option cannot override the baked-in seed)")
+DEFINE_int(hash_seed,
+           0,
+           "Fixed seed to use to hash property keys (0 means random)"
+           "(with snapshots this option cannot override the baked-in seed)")
 
 // v8.cc
 DEFINE_bool(preemption, false,
@@ -564,8 +572,10 @@ DEFINE_implication(print_all_code, print_unopt_code)
 DEFINE_implication(print_all_code, print_code_verbose)
 DEFINE_implication(print_all_code, print_builtin_code)
 DEFINE_implication(print_all_code, print_code_stubs)
-DEFINE_implication(print_all_code, trace_codegen)
 DEFINE_implication(print_all_code, code_comments)
+#ifdef DEBUG
+DEFINE_implication(print_all_code, trace_codegen)
+#endif
 #endif
 
 // Cleanup...

@@ -23,6 +23,14 @@ var common = require('../common');
 var assert = require('assert');
 var net = require('net');
 
+<<<<<<< HEAD
+=======
+var gotError = false;
+
+process.on('exit', function() {
+  assert(gotError);
+});
+>>>>>>> original/master
 
 var server = net.createServer(function(socket) {
   setTimeout(function() {
@@ -32,7 +40,12 @@ var server = net.createServer(function(socket) {
       },
       /This socket is closed/
     );
+<<<<<<< HEAD
     process.exit();
+=======
+    server.close();
+    gotError = true;
+>>>>>>> original/master
   }, 250);
 });
 
@@ -41,4 +54,7 @@ server.listen(common.PORT, function() {
     client.end();
   });
 });
+<<<<<<< HEAD
 
+=======
+>>>>>>> original/master
